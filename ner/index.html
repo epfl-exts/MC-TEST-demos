@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NER Demo</title>
+<style>
+  :root {
+    --bg: #ffffff; --panel: #f7f7f8; --border: #d9d9de; --text: #1f2328; --muted: #656d76;
+    --accent: #2563eb; --accent-text: #ffffff;
+    --per: #fde68a; --org: #bfdbfe; --loc: #bbf7d0; --misc: #e9d5ff;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #16181d; --panel: #1f2229; --border: #3a3f4b; --text: #e6e6e6; --muted: #9aa1ad;
+      --accent: #3b82f6; --accent-text: #ffffff;
+      --per: #7c5e10; --org: #1e4a8a; --loc: #1d6b3a; --misc: #5b3a8a;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 16px; background: var(--bg); color: var(--text);
+         font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 760px; margin: 0 auto; }
+  h1 { font-size: 1.4rem; margin: 0 0 4px; }
+  p.desc { margin: 0 0 16px; color: var(--muted); }
+  label { display: block; font-weight: 600; margin-bottom: 6px; }
+  textarea { width: 100%; min-height: 72px; padding: 10px; font: inherit; color: var(--text);
+             background: var(--panel); border: 1px solid var(--border); border-radius: 8px; resize: vertical; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 10px 0 16px; }
+  button { font: inherit; padding: 8px 18px; border-radius: 8px; cursor: pointer;
+           border: 1px solid var(--border); background: var(--panel); color: var(--text); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  #status { color: var(--muted); font-size: .9rem; }
+  #output { min-height: 72px; padding: 10px; background: var(--panel);
+            border: 1px solid var(--border); border-radius: 8px; white-space: pre-wrap; }
+  mark { color: var(--text); border-radius: 4px; padding: 1px 4px; }
+  mark small { font-size: .7rem; font-weight: 700; margin-left: 4px; opacity: .8; }
+  mark.PER { background: var(--per); } mark.ORG { background: var(--org); }
+  mark.LOC { background: var(--loc); } mark.MISC { background: var(--misc); }
+  .examples { margin-top: 16px; font-size: .9rem; }
+  .examples button { font-size: .9rem; padding: 4px 10px; margin: 4px 4px 0 0; text-align: left; }
+</style>
+</head>
+<body>
+<main>
+  <h1>NER with dslim/bert-base-NER</h1>
+  <p class="desc">Find people (PER), organisations (ORG), locations (LOC) and other names (MISC) in any text. The model runs in your browser.</p>
+
+  <label for="input">Text to find entities</label>
+  <textarea id="input">My name is Amir and I live in Lausanne. I am showing a demo at EPFL</textarea>
+  <div class="row">
+    <button id="submit" class="primary" disabled>Submit</button>
+    <button id="clear">Clear</button>
+    <span id="status" role="status">Loading the model (about 110 MB, only on the first visit)…</span>
+  </div>
+
+  <label>Text with entities</label>
+  <div id="output" aria-live="polite"></div>
+
+  <div class="examples">Examples:<br>
+    <button>My name is Amir and I live in Lausanne. I am showing a demo at EPFL</button>
+    <button>My name is Andrew, I'm building DeepLearningAI and I live in California</button>
+  </div>
+</main>
+
+<script type="module">
+import { pipeline } from "https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.3.1";
+
+const input = document.getElementById("input");
+const output = document.getElementById("output");
+const submit = document.getElementById("submit");
+const status = document.getElementById("status");
+
+// Browser version of dslim/bert-base-NER (8-bit, about 110 MB)
+const ner = await pipeline("token-classification", "Xenova/bert-base-NER", { dtype: "q8" });
+status.textContent = "Model ready.";
+submit.disabled = false;
+
+// The model labels word pieces (B-PER, I-PER, ...). Group them into entities
+// with their position in the text.
+function groupEntities(text, tokens) {
+  const entities = [];
+  let pos = 0;
+  for (const t of tokens) {
+    const piece = t.word.replace(/^##/, "");
+    const start = text.indexOf(piece, pos);
+    if (start === -1) continue;
+    const end = start + piece.length;
+    pos = end;
+    const type = t.entity.slice(2);
+    const last = entities[entities.length - 1];
+    const joins = last && last.type === type &&
+      (t.word.startsWith("##") || t.entity.startsWith("I-")) &&
+      /^\s*$/.test(text.slice(last.end, start));
+    if (joins) last.end = end;
+    else entities.push({ type, start, end });
+  }
+  return entities;
+}
+
+function escape(s) {
+  return s.replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+}
+
+async function run() {
+  const text = input.value;
+  submit.disabled = true;
+  status.textContent = "Finding entities…";
+  const entities = groupEntities(text, await ner(text));
+  let html = "", pos = 0;
+  for (const e of entities) {
+    html += escape(text.slice(pos, e.start));
+    html += `<mark class="${e.type}">${escape(text.slice(e.start, e.end))}<small>${e.type}</small></mark>`;
+    pos = e.end;
+  }
+  output.innerHTML = html + escape(text.slice(pos));
+  status.textContent = `Found ${entities.length} entities.`;
+  submit.disabled = false;
+}
+
+submit.addEventListener("click", run);
+document.getElementById("clear").addEventListener("click", () => {
+  input.value = ""; output.innerHTML = ""; status.textContent = "Model ready.";
+});
+document.querySelectorAll(".examples button").forEach(b =>
+  b.addEventListener("click", () => { input.value = b.textContent; if (!submit.disabled) run(); }));
+</script>
+</body>
+</html>
